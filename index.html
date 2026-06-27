@@ -492,33 +492,66 @@ async function handleFileSelect(input) {
   const file = input.files[0];
   if (!file) return;
 
+  console.log('📷 收到图片文件:', file.name, file.size, file.type);
+
   // 验证文件类型
   if (!file.type.startsWith('image/')) {
     showToast('⚠️ 请选择图片文件', 2000);
+    input.value = '';
     return;
   }
 
   // 验证文件大小（最大 20MB）
   if (file.size > 20 * 1024 * 1024) {
     showToast('⚠️ 图片太大了（不超过20MB）', 2000);
+    input.value = '';
     return;
   }
 
-  // 显示图片预览
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    imagePreview.src = e.target.result;
-    imagePreview.classList.add('show');
-    emptyHint.style.display = 'none';
-    imageArea.classList.add('has-photo');
-  };
-  reader.readAsDataURL(file);
+  // ⚠️ 关键修复：必须等 FileReader 读完，不能让它跟后面的代码赛跑
+  console.log('⏳ 读取图片文件中...');
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+  console.log('✅ 图片读取完成');
+
+  // 设置页面预览
+  imagePreview.src = dataUrl;
+  imagePreview.classList.add('show');
+  emptyHint.style.display = 'none';
+  imageArea.classList.add('has-photo');
+
+  // 创建一个全新的 Image 对象用于 OCR（跟 DOM 预览完全分离，避免任何竞态）
+  const img = new Image();
+  img.src = dataUrl;
+  if (!img.complete) {
+    console.log('⏳ 等待图片解码...');
+    await new Promise((resolve) => {
+      img.onload = resolve;
+      img.onerror = resolve; // 即使出错也别卡死
+    });
+  }
+  console.log('✅ 图片解码完成, 尺寸:', img.naturalWidth, 'x', img.naturalHeight);
+
+  // 验证图片有效
+  if (img.naturalWidth === 0) {
+    progressOverlay.classList.remove('active');
+    showToast('⚠️ 图片加载失败，请重试', 3000);
+    input.value = '';
+    return;
+  }
 
   // 确保 worker 已初始化
   if (!workerReady) {
+    console.log('⏳ 初始化 OCR Worker...');
     try {
       await initWorker();
+      console.log('✅ Worker 初始化完成');
     } catch {
+      input.value = '';
       return; // initWorker 已经显示了错误信息
     }
   }
@@ -528,34 +561,46 @@ async function handleFileSelect(input) {
   progressText.textContent = '正在识别...';
   progressBar.style.width = '0%';
 
-  // 等图片加载完成后再处理
-  await new Promise((resolve) => {
-    if (imagePreview.complete) resolve();
-    else imagePreview.onload = resolve;
-  });
-
   try {
-    // 图片预处理
+    // 图片预处理（使用独立 img 对象，不依赖 DOM）
     progressText.textContent = '正在优化图片...';
     progressBar.style.width = '15%';
-    await sleep(100); // 让 UI 更新
+    await sleep(50);
 
-    const processedCanvas = preprocessImage(imagePreview);
+    const processedCanvas = preprocessImage(img);
+    console.log('✅ 图片预处理完成, 处理后尺寸:', processedCanvas.width, 'x', processedCanvas.height);
 
-    // OCR 识别
+    // 把 Canvas 转成 Blob，这是 Tesseract.js 最稳定的输入方式
+    const imageBlob = await new Promise(resolve => {
+      processedCanvas.toBlob(blob => resolve(blob), 'image/png');
+    });
+    // 如果 Blob 为空（极少见），退回用 Canvas 直接传
+    const ocrInput = imageBlob || processedCanvas;
+    console.log('✅ OCR 输入就绪, 类型:', ocrInput instanceof Blob ? 'Blob' : 'Canvas',
+                ocrInput instanceof Blob ? '大小: ' + (ocrInput.size / 1024).toFixed(1) + 'KB' : '');
+
+    // OCR 识别（带超时保护，最多 60 秒）
     progressText.textContent = '正在识别文字...';
     progressBar.style.width = '30%';
 
-    const result = await ocrWorker.recognize(processedCanvas, {
-      logger: (info) => {
-        if (info.progress) {
-          const pct = 30 + Math.round(info.progress * 65);
-          progressBar.style.width = pct + '%';
-          progressText.textContent = `正在识别文字... ${Math.round(info.progress * 100)}%`;
+    console.log('⏳ 开始 OCR 识别...');
+    const result = await Promise.race([
+      ocrWorker.recognize(ocrInput, {
+        logger: (info) => {
+          console.log('OCR 进度:', info);
+          if (info.progress) {
+            const pct = 30 + Math.round(info.progress * 65);
+            progressBar.style.width = pct + '%';
+            progressText.textContent = `正在识别文字... ${Math.round(info.progress * 100)}%`;
+          }
         }
-      }
-    });
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('OCR 超时（60秒）')), 60000)
+      )
+    ]);
 
+    console.log('✅ OCR 识别完成, 文字长度:', result.data.text.length);
     currentText = result.data.text.trim();
     progressBar.style.width = '100%';
     progressText.textContent = '✅ 识别完成';
@@ -569,13 +614,15 @@ async function handleFileSelect(input) {
     if (currentText) {
       textArea.textContent = currentText;
       showReadingButtons(true);
+      console.log('✅ 朗读按钮已显示');
       showToast(`识别到 ${currentText.length} 个字`, 2000);
     } else {
       textArea.textContent = '';
+      showReadingButtons(false);
       showToast('😕 没有识别到文字，请重新拍照（光线好一点试试）', 3000);
     }
   } catch (err) {
-    console.error('识别失败:', err);
+    console.error('❌ 识别失败:', err);
     progressOverlay.classList.remove('active');
     showToast('❌ 识别失败，请重试', 3000);
   }
