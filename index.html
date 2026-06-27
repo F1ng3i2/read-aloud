@@ -437,15 +437,22 @@ async function initWorker() {
   }
 }
 
-// ========== 图片预处理（灰度化 + 二值化） ==========
+// ========== 图片预处理（缩小 + 灰度化） ==========
+// 注意：不做二值化，交给 Tesseract 自带的 Otsu 算法处理
+// 之前用硬编码阈值二值化会毁掉照片，导致识别为空或卡死
 function preprocessImage(imgElement) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
 
-  // 限制最大尺寸，加快 OCR 速度
-  const MAX_WIDTH = 1500;
+  // 手机照片通常很大（3000x4000+），缩小到 1000px 宽，
+  // 既加快识别速度（手机上能快好几倍），也够 OCR 用
+  const MAX_WIDTH = 1000;
   let w = imgElement.naturalWidth;
   let h = imgElement.naturalHeight;
+  if (w === 0 || h === 0) {
+    // 图片还没真正加载出来，无法处理
+    throw new Error('图片未加载');
+  }
   if (w > MAX_WIDTH) {
     h = Math.round(h * (MAX_WIDTH / w));
     w = MAX_WIDTH;
@@ -455,36 +462,51 @@ function preprocessImage(imgElement) {
   canvas.height = h;
   ctx.drawImage(imgElement, 0, 0, w, h);
 
-  // 获取像素数据
-  const imageData = ctx.getImageData(0, 0, w, h);
-  const pixels = imageData.data;
-
-  // 灰度化 + 自适应阈值二值化
-  // 先计算平均灰度作为阈值参考
-  let sumGray = 0;
-  const grayValues = new Uint8Array(w * h);
-  for (let i = 0; i < pixels.length; i += 4) {
-    const gray = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
-    grayValues[i / 4] = gray;
-    sumGray += gray;
-  }
-  const meanGray = sumGray / (w * h);
-
-  // 使用略低于平均值的阈值（文字通常偏暗）
-  const threshold = Math.max(80, meanGray * 0.75);
-
-  // 应用二值化
-  for (let i = 0; i < pixels.length; i += 4) {
-    const gray = grayValues[i / 4];
-    const binary = gray < threshold ? 0 : 255;
-    pixels[i]     = binary;  // R
-    pixels[i + 1] = binary;  // G
-    pixels[i + 2] = binary;  // B
-    // Alpha 保持不变
+  // 灰度化（保留亮度信息，对识别有帮助，且不破坏图像）
+  try {
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const pixels = imageData.data;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const gray = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+      pixels[i]     = gray;
+      pixels[i + 1] = gray;
+      pixels[i + 2] = gray;
+    }
+    ctx.putImageData(imageData, 0, 0);
+  } catch (e) {
+    // 某些浏览器跨域限制无法读取像素，就用原始缩小图
+    console.warn('灰度化失败，使用原始缩小图:', e);
   }
 
-  ctx.putImageData(imageData, 0, 0);
   return canvas;
+}
+
+// ========== 带超时的识别 ==========
+// 防止识别永久卡死：超过 90 秒就报错提示
+function recognizeWithTimeout(canvas) {
+  const TIMEOUT_MS = 90000;
+  return new Promise(async (resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('识别超时'));
+    }, TIMEOUT_MS);
+
+    try {
+      const result = await ocrWorker.recognize(canvas, {
+        logger: (info) => {
+          if (info.progress) {
+            const pct = 30 + Math.round(info.progress * 65);
+            progressBar.style.width = pct + '%';
+            progressText.textContent = `正在识别文字... ${Math.round(info.progress * 100)}%（请耐心等待）`;
+          }
+        }
+      });
+      clearTimeout(timer);
+      resolve(result);
+    } catch (err) {
+      clearTimeout(timer);
+      reject(err);
+    }
+  });
 }
 
 // ========== 处理图片选择 ==========
@@ -492,66 +514,33 @@ async function handleFileSelect(input) {
   const file = input.files[0];
   if (!file) return;
 
-  console.log('📷 收到图片文件:', file.name, file.size, file.type);
-
   // 验证文件类型
   if (!file.type.startsWith('image/')) {
     showToast('⚠️ 请选择图片文件', 2000);
-    input.value = '';
     return;
   }
 
   // 验证文件大小（最大 20MB）
   if (file.size > 20 * 1024 * 1024) {
     showToast('⚠️ 图片太大了（不超过20MB）', 2000);
-    input.value = '';
     return;
   }
 
-  // ⚠️ 关键修复：必须等 FileReader 读完，不能让它跟后面的代码赛跑
-  console.log('⏳ 读取图片文件中...');
-  const dataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-  console.log('✅ 图片读取完成');
-
-  // 设置页面预览
-  imagePreview.src = dataUrl;
-  imagePreview.classList.add('show');
-  emptyHint.style.display = 'none';
-  imageArea.classList.add('has-photo');
-
-  // 创建一个全新的 Image 对象用于 OCR（跟 DOM 预览完全分离，避免任何竞态）
-  const img = new Image();
-  img.src = dataUrl;
-  if (!img.complete) {
-    console.log('⏳ 等待图片解码...');
-    await new Promise((resolve) => {
-      img.onload = resolve;
-      img.onerror = resolve; // 即使出错也别卡死
-    });
-  }
-  console.log('✅ 图片解码完成, 尺寸:', img.naturalWidth, 'x', img.naturalHeight);
-
-  // 验证图片有效
-  if (img.naturalWidth === 0) {
-    progressOverlay.classList.remove('active');
-    showToast('⚠️ 图片加载失败，请重试', 3000);
-    input.value = '';
-    return;
-  }
+  // 显示图片预览
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    imagePreview.src = e.target.result;
+    imagePreview.classList.add('show');
+    emptyHint.style.display = 'none';
+    imageArea.classList.add('has-photo');
+  };
+  reader.readAsDataURL(file);
 
   // 确保 worker 已初始化
   if (!workerReady) {
-    console.log('⏳ 初始化 OCR Worker...');
     try {
       await initWorker();
-      console.log('✅ Worker 初始化完成');
     } catch {
-      input.value = '';
       return; // initWorker 已经显示了错误信息
     }
   }
@@ -561,46 +550,26 @@ async function handleFileSelect(input) {
   progressText.textContent = '正在识别...';
   progressBar.style.width = '0%';
 
+  // 等图片加载完成后再处理
+  await new Promise((resolve) => {
+    if (imagePreview.complete && imagePreview.naturalWidth > 0) resolve();
+    else imagePreview.onload = resolve;
+  });
+
   try {
-    // 图片预处理（使用独立 img 对象，不依赖 DOM）
+    // 图片预处理
     progressText.textContent = '正在优化图片...';
     progressBar.style.width = '15%';
-    await sleep(50);
+    await sleep(100); // 让 UI 更新
 
-    const processedCanvas = preprocessImage(img);
-    console.log('✅ 图片预处理完成, 处理后尺寸:', processedCanvas.width, 'x', processedCanvas.height);
+    const processedCanvas = preprocessImage(imagePreview);
 
-    // 把 Canvas 转成 Blob，这是 Tesseract.js 最稳定的输入方式
-    const imageBlob = await new Promise(resolve => {
-      processedCanvas.toBlob(blob => resolve(blob), 'image/png');
-    });
-    // 如果 Blob 为空（极少见），退回用 Canvas 直接传
-    const ocrInput = imageBlob || processedCanvas;
-    console.log('✅ OCR 输入就绪, 类型:', ocrInput instanceof Blob ? 'Blob' : 'Canvas',
-                ocrInput instanceof Blob ? '大小: ' + (ocrInput.size / 1024).toFixed(1) + 'KB' : '');
-
-    // OCR 识别（带超时保护，最多 60 秒）
-    progressText.textContent = '正在识别文字...';
+    // OCR 识别（带超时保护）
+    progressText.textContent = '正在识别文字... 请耐心等待';
     progressBar.style.width = '30%';
 
-    console.log('⏳ 开始 OCR 识别...');
-    const result = await Promise.race([
-      ocrWorker.recognize(ocrInput, {
-        logger: (info) => {
-          console.log('OCR 进度:', info);
-          if (info.progress) {
-            const pct = 30 + Math.round(info.progress * 65);
-            progressBar.style.width = pct + '%';
-            progressText.textContent = `正在识别文字... ${Math.round(info.progress * 100)}%`;
-          }
-        }
-      }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('OCR 超时（60秒）')), 60000)
-      )
-    ]);
+    const result = await recognizeWithTimeout(processedCanvas);
 
-    console.log('✅ OCR 识别完成, 文字长度:', result.data.text.length);
     currentText = result.data.text.trim();
     progressBar.style.width = '100%';
     progressText.textContent = '✅ 识别完成';
@@ -614,17 +583,23 @@ async function handleFileSelect(input) {
     if (currentText) {
       textArea.textContent = currentText;
       showReadingButtons(true);
-      console.log('✅ 朗读按钮已显示');
       showToast(`识别到 ${currentText.length} 个字`, 2000);
     } else {
       textArea.textContent = '';
-      showReadingButtons(false);
-      showToast('😕 没有识别到文字，请重新拍照（光线好一点试试）', 3000);
+      // 即使没识别到文字，也显示朗读按钮（朗读会提示无内容）
+      showReadingButtons(true);
+      showToast('😕 没识别到文字，请重新拍清晰一点', 3000);
     }
   } catch (err) {
-    console.error('❌ 识别失败:', err);
+    console.error('识别失败:', err);
     progressOverlay.classList.remove('active');
-    showToast('❌ 识别失败，请重试', 3000);
+    if (err.message === '识别超时') {
+      showToast('❌ 识别超时，请拍清晰一点或换张照片重试', 3500);
+    } else if (err.message === '图片未加载') {
+      showToast('❌ 图片加载失败，请重拍', 3000);
+    } else {
+      showToast('❌ 识别失败，请重试', 3000);
+    }
   }
 
   // 清空 input，允许重复选同一张图
