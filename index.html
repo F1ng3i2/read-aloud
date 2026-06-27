@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="拍照读书">
+  <title>📷 拍照读书</title>
+  <style>
+    /* ===== 基础样式 ===== */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(135deg, #fff8e7 0%, #fff3d6 50%, #ffe8c8 100%);
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 12px;
+    }
+
+    .app {
+      width: 100%;
+      max-width: 460px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* ===== 标题 ===== */
+    .title {
+      text-align: center;
+      font-size: 28px;
+      font-weight: 700;
+      color: #e67e22;
+      text-shadow: 1px 1px 0 rgba(0,0,0,0.08);
+      letter-spacing: 2px;
+    }
+    .title .icon { font-size: 34px; }
+
+    /* ===== 卡片容器 ===== */
+    .card {
+      background: #fff;
+      border-radius: 20px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+      padding: 16px;
+      overflow: hidden;
+    }
+
+    /* ===== 图片预览区 ===== */
+    .image-area {
+      position: relative;
+      width: 100%;
+      min-height: 180px;
+      max-height: 320px;
+      border-radius: 14px;
+      background: #f5f0e8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      border: 3px dashed #e0d5c0;
+      transition: border-color 0.3s;
+    }
+    .image-area.has-photo {
+      border: 3px solid #e0d5c0;
+    }
+    .image-area img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: none;
+    }
+    .image-area img.show { display: block; }
+
+    .empty-hint {
+      text-align: center;
+      color: #c0b090;
+      font-size: 15px;
+      line-height: 1.8;
+    }
+    .empty-hint .big-emoji { font-size: 48px; display: block; margin-bottom: 4px; }
+
+    /* ===== OCR 进度遮罩 ===== */
+    .progress-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      border-radius: 14px;
+    }
+    .progress-overlay.active { display: flex; }
+    .progress-overlay .spinner {
+      width: 40px; height: 40px;
+      border: 4px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .progress-overlay .progress-text {
+      color: #fff;
+      font-size: 15px;
+      font-weight: 500;
+    }
+    .progress-overlay .progress-bar-wrap {
+      width: 70%;
+      height: 6px;
+      background: rgba(255,255,255,0.3);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-overlay .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: #f39c12;
+      border-radius: 3px;
+      transition: width 0.3s;
+    }
+
+    /* ===== 文字显示区 ===== */
+    .text-area {
+      width: 100%;
+      min-height: 100px;
+      max-height: 260px;
+      overflow-y: auto;
+      padding: 14px;
+      background: #fefcf7;
+      border-radius: 14px;
+      font-size: 20px;
+      line-height: 1.9;
+      color: #4a3728;
+      letter-spacing: 1px;
+      border: 1px solid #f0e8d8;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .text-area:empty::before {
+      content: "识别出的文字会显示在这里...";
+      color: #ccc0b0;
+      font-size: 16px;
+    }
+    .text-area .highlight {
+      background: #ffeaa7;
+      border-radius: 3px;
+      padding: 0 2px;
+    }
+
+    /* ===== 按钮 ===== */
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      flex: 1;
+      min-width: 80px;
+      padding: 14px 10px;
+      border: none;
+      border-radius: 50px;
+      font-size: 18px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: transform 0.15s, box-shadow 0.15s, opacity 0.2s;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .btn:active {
+      transform: scale(0.95);
+    }
+    .btn:disabled {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
+    .btn-camera {
+      background: #f39c12;
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(243,156,18,0.35);
+      font-size: 20px;
+    }
+    .btn-album {
+      background: #fff;
+      color: #e67e22;
+      border: 2px solid #f39c12;
+      font-size: 16px;
+    }
+    .btn-read {
+      background: #27ae60;
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(39,174,96,0.35);
+      font-size: 20px;
+    }
+    .btn-pause {
+      background: #f1c40f;
+      color: #5d4e37;
+      box-shadow: 0 4px 14px rgba(241,196,15,0.35);
+    }
+    .btn-stop {
+      background: #e74c3c;
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(231,76,60,0.3);
+    }
+    .btn-reset {
+      background: #95a5a6;
+      color: #fff;
+      font-size: 15px;
+    }
+
+    /* ===== 提示信息 ===== */
+    .toast {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #333;
+      color: #fff;
+      padding: 10px 24px;
+      border-radius: 50px;
+      font-size: 14px;
+      z-index: 999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+    .toast.show { opacity: 1; }
+
+    /* ===== 加载语言包时的全局提示 ===== */
+    .global-loading {
+      display: none;
+      text-align: center;
+      padding: 60px 20px;
+      color: #b08050;
+      font-size: 16px;
+      line-height: 2;
+    }
+    .global-loading.active { display: block; }
+    .global-loading .loader-dot {
+      display: inline-block;
+      width: 10px; height: 10px;
+      background: #f39c12;
+      border-radius: 50%;
+      animation: bounce 1.2s infinite ease-in-out;
+      margin: 0 4px;
+    }
+    .global-loading .loader-dot:nth-child(2) { animation-delay: 0.2s; }
+    .global-loading .loader-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: scale(0); }
+      40% { transform: scale(1); }
+    }
+  </style>
+</head>
+<body>
+
+<div class="app">
+  <!-- 标题 -->
+  <div class="title">
+    <span class="icon">📷</span> 拍照读书
+  </div>
+
+  <!-- 全局加载提示（首次加载语言包时显示） -->
+  <div class="global-loading" id="globalLoading">
+    <div style="font-size:40px;">📚</div>
+    正在准备中文识别引擎...
+    <br><span style="font-size:13px;color:#c0a080;">首次使用需下载语言包（约10MB），请耐心等待</span>
+    <br>
+    <span class="loader-dot"></span>
+    <span class="loader-dot"></span>
+    <span class="loader-dot"></span>
+    <br>
+    <span id="globalProgress" style="font-size:14px;color:#e67e22;"></span>
+  </div>
+
+  <!-- 图片预览卡片 -->
+  <div class="card" id="imageCard">
+    <div class="image-area" id="imageArea">
+      <img id="imagePreview" alt="书页照片">
+      <div class="empty-hint" id="emptyHint">
+        <span class="big-emoji">📖</span>
+        拍拍书页，我来读给你听
+      </div>
+      <div class="progress-overlay" id="progressOverlay">
+        <div class="spinner"></div>
+        <div class="progress-text" id="progressText">正在识别...</div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar-fill" id="progressBar"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 文字显示 -->
+    <div class="text-area" id="textArea" contenteditable="false"></div>
+  </div>
+
+  <!-- 按钮区 -->
+  <div class="btn-row" id="btnRow">
+    <button class="btn btn-camera" id="btnCamera" onclick="takePhoto()">
+      📸 拍照
+    </button>
+    <button class="btn btn-album" id="btnAlbum" onclick="pickFromAlbum()">
+      📁 相册
+    </button>
+  </div>
+
+  <div class="btn-row" id="btnRowRead" style="display:none;">
+    <button class="btn btn-read" id="btnRead" onclick="startReading()">
+      🔊 朗读
+    </button>
+    <button class="btn btn-pause" id="btnPause" onclick="togglePause()" disabled>
+      ⏸️ 暂停
+    </button>
+    <button class="btn btn-stop" id="btnStop" onclick="stopReading()" disabled>
+      ⏹️ 停止
+    </button>
+  </div>
+
+  <div class="btn-row" id="btnRowExtra" style="display:none;">
+    <button class="btn btn-reset" onclick="resetAll()">
+      🔄 重新拍照
+    </button>
+  </div>
+</div>
+
+<!-- Toast 提示 -->
+<div class="toast" id="toast"></div>
+
+<!-- 隐藏的文件输入 -->
+<input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none"
+       onchange="handleFileSelect(this)">
+<input type="file" id="albumInput" accept="image/*" style="display:none"
+       onchange="handleFileSelect(this)">
+
+<!-- Tesseract.js CDN -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js">
+</script>
+
+<script>
+// ========== 全局状态 ==========
+let ocrWorker = null;        // Tesseract.js worker 实例
+let workerReady = false;     // worker 是否已就绪
+let currentText = '';        // 当前识别出的文字
+let utterance = null;        // 当前朗读的 utterance
+let isPaused = false;        // 朗读是否暂停中
+
+// ========== DOM 引用 ==========
+const $ = (id) => document.getElementById(id);
+const imageArea    = $('imageArea');
+const imagePreview = $('imagePreview');
+const emptyHint    = $('emptyHint');
+const progressOverlay = $('progressOverlay');
+const progressText = $('progressText');
+const progressBar  = $('progressBar');
+const textArea     = $('textArea');
+const globalLoading = $('globalLoading');
+const globalProgress = $('globalProgress');
+const btnCamera    = $('btnCamera');
+const btnAlbum     = $('btnAlbum');
+const btnRow       = $('btnRow');
+const btnRowRead   = $('btnRowRead');
+const btnRowExtra  = $('btnRowExtra');
+const btnRead      = $('btnRead');
+const btnPause     = $('btnPause');
+const btnStop      = $('btnStop');
+const cameraInput  = $('cameraInput');
+const albumInput   = $('albumInput');
+const imageCard    = $('imageCard');
+const toastEl      = $('toast');
+
+// ========== Toast 提示 ==========
+let toastTimer;
+function showToast(msg, duration = 2000) {
+  clearTimeout(toastTimer);
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), duration);
+}
+
+// ========== 初始化 Tesseract Worker ==========
+async function initWorker() {
+  if (workerReady && ocrWorker) return;
+
+  // 显示全局加载
+  globalLoading.classList.add('active');
+  imageCard.style.opacity = '0.4';
+  btnRow.style.opacity = '0.4';
+  btnCamera.disabled = true;
+  btnAlbum.disabled = true;
+
+  try {
+    ocrWorker = await Tesseract.createWorker('chi_sim', 1, {
+      logger: (info) => {
+        if (info.status === 'loading tesseract core') {
+          globalProgress.textContent = `加载识别核心... ${Math.round(info.progress * 100)}%`;
+        } else if (info.status === 'loading language traineddata') {
+          globalProgress.textContent = `下载中文语言包... ${Math.round(info.progress * 100)}%`;
+        } else if (info.status === 'initializing api') {
+          globalProgress.textContent = '初始化中...';
+        }
+      }
+    });
+
+    workerReady = true;
+
+    // 设置识别参数（非关键，失败不影响使用）
+    try {
+      await ocrWorker.setParameters({
+        preserve_interword_spaces: '1',
+      });
+    } catch (e) {
+      console.warn('setParameters 失败，使用默认设置:', e);
+    }
+
+    showToast('✅ 识别引擎就绪！', 1500);
+  } catch (err) {
+    console.error('Worker 初始化失败:', err);
+    showToast('❌ 识别引擎加载失败，请刷新页面重试', 3000);
+    throw err;
+  } finally {
+    globalLoading.classList.remove('active');
+    imageCard.style.opacity = '1';
+    btnRow.style.opacity = '1';
+    btnCamera.disabled = false;
+    btnAlbum.disabled = false;
+  }
+}
+
+// ========== 图片预处理（灰度化 + 二值化） ==========
+function preprocessImage(imgElement) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+
+  // 限制最大尺寸，加快 OCR 速度
+  const MAX_WIDTH = 1500;
+  let w = imgElement.naturalWidth;
+  let h = imgElement.naturalHeight;
+  if (w > MAX_WIDTH) {
+    h = Math.round(h * (MAX_WIDTH / w));
+    w = MAX_WIDTH;
+  }
+
+  canvas.width = w;
+  canvas.height = h;
+  ctx.drawImage(imgElement, 0, 0, w, h);
+
+  // 获取像素数据
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const pixels = imageData.data;
+
+  // 灰度化 + 自适应阈值二值化
+  // 先计算平均灰度作为阈值参考
+  let sumGray = 0;
+  const grayValues = new Uint8Array(w * h);
+  for (let i = 0; i < pixels.length; i += 4) {
+    const gray = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+    grayValues[i / 4] = gray;
+    sumGray += gray;
+  }
+  const meanGray = sumGray / (w * h);
+
+  // 使用略低于平均值的阈值（文字通常偏暗）
+  const threshold = Math.max(80, meanGray * 0.75);
+
+  // 应用二值化
+  for (let i = 0; i < pixels.length; i += 4) {
+    const gray = grayValues[i / 4];
+    const binary = gray < threshold ? 0 : 255;
+    pixels[i]     = binary;  // R
+    pixels[i + 1] = binary;  // G
+    pixels[i + 2] = binary;  // B
+    // Alpha 保持不变
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+// ========== 处理图片选择 ==========
+async function handleFileSelect(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  // 验证文件类型
+  if (!file.type.startsWith('image/')) {
+    showToast('⚠️ 请选择图片文件', 2000);
+    return;
+  }
+
+  // 验证文件大小（最大 20MB）
+  if (file.size > 20 * 1024 * 1024) {
+    showToast('⚠️ 图片太大了（不超过20MB）', 2000);
+    return;
+  }
+
+  // 显示图片预览
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    imagePreview.src = e.target.result;
+    imagePreview.classList.add('show');
+    emptyHint.style.display = 'none';
+    imageArea.classList.add('has-photo');
+  };
+  reader.readAsDataURL(file);
+
+  // 确保 worker 已初始化
+  if (!workerReady) {
+    try {
+      await initWorker();
+    } catch {
+      return; // initWorker 已经显示了错误信息
+    }
+  }
+
+  // 显示进度遮罩
+  progressOverlay.classList.add('active');
+  progressText.textContent = '正在识别...';
+  progressBar.style.width = '0%';
+
+  // 等图片加载完成后再处理
+  await new Promise((resolve) => {
+    if (imagePreview.complete) resolve();
+    else imagePreview.onload = resolve;
+  });
+
+  try {
+    // 图片预处理
+    progressText.textContent = '正在优化图片...';
+    progressBar.style.width = '15%';
+    await sleep(100); // 让 UI 更新
+
+    const processedCanvas = preprocessImage(imagePreview);
+
+    // OCR 识别
+    progressText.textContent = '正在识别文字...';
+    progressBar.style.width = '30%';
+
+    const result = await ocrWorker.recognize(processedCanvas, {
+      logger: (info) => {
+        if (info.progress) {
+          const pct = 30 + Math.round(info.progress * 65);
+          progressBar.style.width = pct + '%';
+          progressText.textContent = `正在识别文字... ${Math.round(info.progress * 100)}%`;
+        }
+      }
+    });
+
+    currentText = result.data.text.trim();
+    progressBar.style.width = '100%';
+    progressText.textContent = '✅ 识别完成';
+
+    await sleep(400); // 短暂显示完成状态
+
+    // 隐藏进度遮罩
+    progressOverlay.classList.remove('active');
+
+    // 显示识别结果
+    if (currentText) {
+      textArea.textContent = currentText;
+      showReadingButtons(true);
+      showToast(`识别到 ${currentText.length} 个字`, 2000);
+    } else {
+      textArea.textContent = '';
+      showToast('😕 没有识别到文字，请重新拍照（光线好一点试试）', 3000);
+    }
+  } catch (err) {
+    console.error('识别失败:', err);
+    progressOverlay.classList.remove('active');
+    showToast('❌ 识别失败，请重试', 3000);
+  }
+
+  // 清空 input，允许重复选同一张图
+  input.value = '';
+}
+
+// ========== 拍照 / 相册 ==========
+function takePhoto() {
+  cameraInput.click();
+}
+
+function pickFromAlbum() {
+  albumInput.click();
+}
+
+// ========== 朗读控制 ==========
+function showReadingButtons(show) {
+  btnRow.style.display = show ? 'none' : 'flex';
+  btnRowRead.style.display = show ? 'flex' : 'none';
+  btnRowExtra.style.display = show ? 'flex' : 'none';
+  btnRead.disabled = !show;
+  btnPause.disabled = true;
+  btnStop.disabled = true;
+}
+
+function startReading() {
+  if (!currentText) {
+    showToast('⚠️ 还没有文字，请先拍照', 2000);
+    return;
+  }
+
+  // 先停止之前的朗读
+  window.speechSynthesis.cancel();
+
+  utterance = new SpeechSynthesisUtterance(currentText);
+  utterance.lang = 'zh-CN';
+  utterance.rate = 0.75;   // 慢速，适合小朋友
+  utterance.pitch = 1.05;  // 稍高，更亲切
+
+  // 尝试选择中文语音
+  const voices = window.speechSynthesis.getVoices();
+  const zhVoice = voices.find(v => v.lang.startsWith('zh-CN') || v.lang.startsWith('zh-TW') || v.lang.startsWith('zh-HK'));
+  if (zhVoice) {
+    utterance.voice = zhVoice;
+  }
+
+  // 朗读事件
+  utterance.onstart = () => {
+    isPaused = false;
+    btnRead.disabled = true;
+    btnPause.disabled = false;
+    btnPause.textContent = '⏸️ 暂停';
+    btnStop.disabled = false;
+  };
+
+  utterance.onend = () => {
+    // 朗读自然结束
+    resetReadingState();
+    showToast('✅ 朗读完成！', 2000);
+  };
+
+  utterance.onerror = (e) => {
+    if (e.error !== 'canceled' && e.error !== 'interrupted') {
+      console.error('朗读出错:', e);
+      showToast('⚠️ 朗读出错了，请重试', 2000);
+    }
+    resetReadingState();
+  };
+
+  window.speechSynthesis.speak(utterance);
+}
+
+function togglePause() {
+  if (!window.speechSynthesis.speaking && !isPaused) return;
+
+  if (isPaused) {
+    // 继续
+    window.speechSynthesis.resume();
+    isPaused = false;
+    btnPause.textContent = '⏸️ 暂停';
+    btnRead.disabled = true;
+  } else {
+    // 暂停
+    window.speechSynthesis.pause();
+    isPaused = true;
+    btnPause.textContent = '▶️ 继续';
+    btnRead.disabled = true;
+    btnStop.disabled = false;
+  }
+}
+
+function stopReading() {
+  window.speechSynthesis.cancel();
+  resetReadingState();
+}
+
+function resetReadingState() {
+  isPaused = false;
+  utterance = null;
+  btnRead.disabled = false;
+  btnPause.disabled = true;
+  btnPause.textContent = '⏸️ 暂停';
+  btnStop.disabled = true;
+}
+
+// ========== 重置 ==========
+function resetAll() {
+  window.speechSynthesis.cancel();
+  resetReadingState();
+
+  imagePreview.classList.remove('show');
+  imagePreview.src = '';
+  emptyHint.style.display = '';
+  imageArea.classList.remove('has-photo');
+  textArea.textContent = '';
+  currentText = '';
+  progressOverlay.classList.remove('active');
+
+  showReadingButtons(false);
+  btnRead.disabled = true;
+  btnRow.style.display = 'flex';
+}
+
+// ========== 工具函数 ==========
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ========== 预加载语音列表 ==========
+// 某些浏览器需要触发 voiceschanged 事件才能获取语音列表
+window.speechSynthesis.onvoiceschanged = () => {
+  // 语音列表已就绪，这里可以预缓存
+};
+
+// 触发一次以加载语音列表
+window.speechSynthesis.getVoices();
+
+// ========== 页面加载完成 ==========
+console.log('📷 拍照读书 — 已就绪');
+console.log('   - 点"拍照"调起相机拍照');
+console.log('   - 拍完后自动识别文字');
+console.log('   - 点"朗读"开始语音播报');
+console.log('   - 支持暂停/继续/停止');
+console.log('   - 首次使用需下载中文语言包（约10MB）');
+</script>
+
+</body>
+</html>
